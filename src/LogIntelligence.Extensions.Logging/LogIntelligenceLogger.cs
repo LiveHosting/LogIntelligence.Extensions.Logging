@@ -47,16 +47,6 @@ namespace LogIntelligence.Extensions.Logging
                 return;
             }
 
-            var logEntry = new
-            {
-                LogLevel = logLevel.ToString(),
-                EventId = eventId.Id,
-                State = state.ToString(),
-                Exception = exception?.ToString(),
-                Message = formatter(state, exception),
-                LoggerName = name
-            };
-
             var context = httpContextAccessor.HttpContext;
             var baseException = exception?.GetBaseException();
 
