@@ -9,9 +9,15 @@ namespace LogIntelligence.Extensions.Logging.Tests
     [TestClass]
     public class LogIntelligenceLoggerProviderTests
     {
+        public LogIntelligenceLoggerProviderTests()
+        {
+            
+        }
+
         [TestMethod]
         public void TestMethod1()
         {
+            Assert.IsTrue(true);
         }
     }
 }
