@@ -9,10 +9,10 @@ namespace LogIntelligence.Extensions.Logging
     public class LogIntelligenceLoggerProvider : ILoggerProvider, ISupportExternalScope
     {
         private readonly LogIntelligenceClient client;
-        // Fix 1: Change the dictionary value type to LogIntelligenceLogger
         private readonly ConcurrentDictionary<string, LogIntelligenceLogger> loggers = new();
         private readonly IHttpContextAccessor httpContextAccessor;
         private readonly LogIntelligenceOptions options;
+
         public LogIntelligenceLoggerProvider(LogIntelligenceClient Client, IHttpContextAccessor HttpContextAccessor, LogIntelligenceOptions Options)
         {
             this.client = Client;
