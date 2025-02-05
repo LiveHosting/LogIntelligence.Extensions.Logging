@@ -2,35 +2,30 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Collections.Concurrent;
 
 namespace LogIntelligence.Extensions.Logging
 {
-    public class LogIntelligenceLoggerProvider : ILoggerProvider, ISupportExternalScope
+    public class LogIntelligenceLoggerProvider : ILoggerProvider
     {
-        private readonly LogIntelligenceClient client;
-        private readonly ConcurrentDictionary<string, LogIntelligenceLogger> loggers = new();
-        private readonly IHttpContextAccessor httpContextAccessor;
-        private readonly LogIntelligenceOptions options;
+        private readonly ILogQueue _logQueue;
+        private readonly LogIntelligenceOptions _options;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
-        public LogIntelligenceLoggerProvider(LogIntelligenceClient Client, IHttpContextAccessor HttpContextAccessor, LogIntelligenceOptions Options)
+        public LogIntelligenceLoggerProvider(ILogQueue logQueue, IHttpContextAccessor httpContextAccessor, IOptions<LogIntelligenceOptions> options)
         {
-            this.client = Client;
+            _logQueue = logQueue;
+            _options = options.Value;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         public ILogger CreateLogger(string categoryName)
         {
-            return new LogIntelligenceLogger(categoryName, client, httpContextAccessor, options);
+            return new LogIntelligenceLogger(categoryName, _logQueue, _options, _httpContextAccessor);
         }
 
         public void Dispose()
         {
-            loggers.Clear();
-        }
-
-        public void SetScopeProvider(IExternalScopeProvider scopeProvider)
-        {
-            throw new NotImplementedException();
+            // No resources to dispose
         }
     }
 }

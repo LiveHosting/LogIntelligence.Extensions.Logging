@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="LogIntelligence.Extensions.Logging" Version="1.0.0" />
+    <ProjectReference Include="..\..\src\LogIntelligence.Extensions.Logging\LogIntelligence.Extensions.Logging.csproj" />
   </ItemGroup>
 
 </Project>

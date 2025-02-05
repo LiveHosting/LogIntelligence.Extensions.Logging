@@ -1,33 +1,28 @@
 ﻿using LogIntelligence.Client;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 
 namespace LogIntelligence.Extensions.Logging
 {
     public class LogIntelligenceLogger : ILogger
     {
-        private readonly string name;
-        private readonly LogIntelligenceClient client;
-        private readonly IHttpContextAccessor httpContextAccessor;
-        private readonly LogIntelligenceOptions options;
+        private readonly string _categoryName;
+        private readonly ILogQueue _logQueue;
+        private readonly LogLevel _logLevel;
+        private readonly LogIntelligenceOptions _options;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
-        private static string _assemblyVersion = typeof(LogIntelligenceLogger).Assembly.GetName().Version.ToString();
-        private static string _aspNetCoreAssemblyVersion = typeof(HttpContext).Assembly.GetName().Version.ToString();
-
-        public LogIntelligenceLogger(string Name, LogIntelligenceClient Client, IHttpContextAccessor HttpContextAccessor, LogIntelligenceOptions Options)
+        public LogIntelligenceLogger(string categoryName, ILogQueue logQueue, LogIntelligenceOptions options, IHttpContextAccessor httpContextAccessor, LogLevel logLevel = LogLevel.Information)
         {
-            this.name=Name;
-            this.client= Client;
-            this.options = Options;
+            _categoryName = categoryName;
+            _logQueue = logQueue;
+            _logLevel = logLevel;
+            _options = options;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull
@@ -35,79 +30,61 @@ namespace LogIntelligence.Extensions.Logging
             return null;
         }
 
-        public bool IsEnabled(LogLevel logLevel)
-        {
-            return true; // Customize based on your needs
-        }
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= _logLevel;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel))
-            {
                 return;
-            }
 
-            var context = httpContextAccessor.HttpContext;
-            var baseException = exception?.GetBaseException();
+            // Access HttpContext within the scope of the current request
+            var httpContext = _httpContextAccessor.HttpContext;
+            var url = httpContext?.Request.Path.ToString();
+            var method = httpContext?.Request.Method;
+            var statusCode = httpContext?.Response.StatusCode;
+            var user = httpContext?.User?.Identity?.Name;
+            var serverVariables = httpContext != null ? ServerVariables(httpContext) : new Dictionary<string, string>();
+            var cookies = httpContext != null ? Cookies(httpContext) : new Dictionary<string, string>();
+            var form = httpContext != null ? Form(httpContext) : new Dictionary<string, string>();
+            var queryString = httpContext != null ? QueryString(httpContext) : new Dictionary<string, string>();
 
-            CreateMessageRequest req = new CreateMessageRequest()
+            var logEntry = new CreateMessageRequest
             {
+                LogID = _options.LogID,
                 CreatedDate = DateTime.UtcNow,
-                Detail = exception?.ToString(),
-                Type = exception.GetBaseException().GetType().FullName,
-                Title = exception.GetBaseException().Message,
-                Cookies = Cookies(context),
-                Form = Form(context),
-                Hostname = Hostname(context),
-                ServerVariables = ServerVariables(context),
-                StatusCode=StatusCode(exception, context),
-                Url = Url(context),
-                QueryString = QueryString(context),
-                Method = context.Request?.Method,
-                Severity = Severity(exception, context),
-                Source = Source(baseException),
-                Application = options.Application,
-                 
+                Title = exception?.GetBaseException().Message ?? "No exception message",
+                Detail = formatter(state, exception),
+                Severity = LogLevelToSeverity(logLevel),
+                Source = exception?.GetBaseException().Source ?? "No source",
+                Hostname = Environment.MachineName,
+                User = user ?? "Anonymous",
+                Type = exception?.GetBaseException().GetType().FullName ?? "No type",
+                Application = _options.Application,
+                Url = url ?? "No URL",
+                Method = method ?? "No method",
+                StatusCode = statusCode,
+                ServerVariables = serverVariables,
+                Cookies = cookies,
+                Form = form,
+                QueryString = queryString,
+                Code = "INSERT CODE HERE",
+                CorrelationID = "INSERT CORRELATION ID HERE",
+                Version = "INSERT VERSION HERE"
             };
 
-            TrySetUser(context, req);
-
-            // Offload the asynchronous operation to a background task
-            Task.Run(async () => await client.SendMessageAsync(req).ConfigureAwait(false));
+            _logQueue.Enqueue(logEntry);
         }
 
-        private static void TrySetUser(HttpContext context, CreateMessageRequest createMessageRequest)
+        private static Dictionary<string, string> QueryString(HttpContext context)
+        {
+            return context.Request?.Query?.Keys.ToDictionary(k => k, k => context.Request.Query[k].ToString()) ?? new Dictionary<string, string>();
+        }
+
+        private static Dictionary<string, string> Form(HttpContext context)
         {
             try
             {
-                createMessageRequest.User = context?.User?.Identity?.Name;
-            }
-            catch
-            {
-                // ASP.NET Core < 2.0 is broken. When creating a new ASP.NET Core 1.x project targeting .NET Framework
-                // .NET throws a runtime error complaining about missing System.Security.Claims. For this reason,
-                // we don't support setting the User property for 1.x projects targeting .NET Framework.
-                // Check out the following GitHub issues for details:
-                // - https://github.com/dotnet/standard/issues/410
-                // - https://github.com/dotnet/sdk/issues/901
-            }
-        }
-
-        private static List<MessageItem> Cookies(HttpContext httpContext)
-        {
-            return httpContext.Request?.Cookies?.Keys.Select(k => new MessageItem(k, httpContext.Request.Cookies[k])).ToList();
-        }
-
-        private static string Source(Exception baseException)
-        {
-            return baseException?.Source;
-        }
-
-        private static List<MessageItem> Form(HttpContext httpContext)
-        {
-            try
-            {
-                return httpContext.Request?.Form?.Keys.Select(k => new MessageItem(k, httpContext.Request.Form[k])).ToList();
+                return context.Request?.Form?.Keys.ToDictionary(k => k, k => context.Request.Form[k].ToString()) ?? new Dictionary<string, string>();
             }
             catch (Exception)
             {
@@ -115,102 +92,35 @@ namespace LogIntelligence.Extensions.Logging
                 // - InvalidOperationException: Request not a form POST or similar
                 // - InvalidDataException: Form body without a content-type or similar
                 // - ConnectionResetException: More than 100 active connections or similar
+                // - System.IO.IOException: Unexpected end of stream
+
+                // In case of an exception return an empty dictionary since we still want the middleware to run
+                return new Dictionary<string, string>();
             }
-
-            return new List<MessageItem>();
         }
 
-        private static List<MessageItem> ServerVariables(HttpContext httpContext)
+        private static Dictionary<string, string> Cookies(HttpContext context)
         {
-            var serverVariables = new List<MessageItem>();
-            serverVariables.AddRange(RequestHeaders(httpContext.Request));
-            serverVariables.AddRange(Features(httpContext.Features));
-            return serverVariables;
+            return context.Request?.Cookies?.Keys.ToDictionary(k => k, k => context.Request.Cookies[k].ToString()) ?? new Dictionary<string, string>();
         }
 
-        private static IEnumerable<MessageItem> RequestHeaders(HttpRequest request)
+        private static Dictionary<string, string> ServerVariables(HttpContext context)
         {
-            return request?.Headers?.Keys.Select(k => new MessageItem(k, request.Headers[k])).ToList();
+            return context.Request?.Headers?.Keys.ToDictionary(k => k, k => context.Request.Headers[k].ToString()) ?? new Dictionary<string, string>();
         }
 
-        private static IEnumerable<MessageItem> Features(IFeatureCollection features)
+        private static Severity LogLevelToSeverity(LogLevel logLevel)
         {
-            var items = new List<MessageItem>();
-            if (features == null) return items;
-
-            foreach (var property in features.GetType().GetProperties())
+            return logLevel switch
             {
-                try
-                {
-                    var value = property.GetValue(features);
-                    if (value.IsValidForItems()) items.Add(new MessageItem(property.Name, value.ToString()));
-                }
-                catch
-                {
-                    // If getting a value from a property throws an exception, we cannot add it to the list of items.
-                    // The best option is to continue iterating over the list of features.
-                }
-            }
-
-            return items;
-        }
-
-        private static List<MessageItem> QueryString(HttpContext httpContext)
-        {
-            return httpContext.Request?.Query?.Keys.Select(k => new MessageItem(k, httpContext.Request.Query[k])).ToList();
-        }
-
-        private static string UserAgent()
-        {
-            return new StringBuilder()
-                .Append(new ProductInfoHeaderValue(new ProductHeaderValue("LogIntelligence.Extensions.Logging", _assemblyVersion)).ToString())
-                .Append(" ")
-                .Append(new ProductInfoHeaderValue(new ProductHeaderValue("Microsoft.AspNetCore.Http", _aspNetCoreAssemblyVersion)).ToString())
-                .ToString();
-        }
-
-        private static string Hostname(HttpContext context)
-        {
-            var machineName = Environment.MachineName;
-            if (!string.IsNullOrWhiteSpace(machineName)) return machineName;
-
-            machineName = Environment.GetEnvironmentVariable("COMPUTERNAME");
-            if (!string.IsNullOrWhiteSpace(machineName)) return machineName;
-
-            return context.Request?.Host.Host;
-        }
-
-        private static int? StatusCode(Exception exception, HttpContext context)
-        {
-            if (exception != null)
-            {
-                // If an exception is thrown, but the response has a successful status code,
-                // it is because the elmah.io middleware are running before the correct
-                // status code is assigned the response. Override it with 500.
-                return context.Response?.StatusCode < 400 ? 500 : context.Response?.StatusCode;
-            }
-
-            return context.Response?.StatusCode;
-        }
-
-        private static string Url(HttpContext context)
-        {
-            if (context.Request == null) return null;
-            if (context.Request.Path.HasValue) return context.Request.Path.Value;
-            if (context.Request.PathBase.HasValue) return context.Request.PathBase.Value;
-
-            return null;
-        }
-
-        private static Severity? Severity(Exception exception, HttpContext context)
-        {
-            var statusCode = StatusCode(exception, context);
-            
-            if (statusCode.HasValue && statusCode >= 400 && statusCode < 500) return LogIntelligence.Client.Severity.Warning;
-            if (statusCode.HasValue && statusCode >= 500) return LogIntelligence.Client.Severity.Error;
-            if (exception != null) return LogIntelligence.Client.Severity.Error;
-
-            return null; // Let logint.ro decide when receiving the message
+                LogLevel.Critical => Severity.Fatal,
+                LogLevel.Debug => Severity.Debug,
+                LogLevel.Error => Severity.Error,
+                LogLevel.Information => Severity.Information,
+                LogLevel.Trace => Severity.Verbose,
+                LogLevel.Warning => Severity.Warning,
+                _ => Severity.Information,
+            };
         }
     }
 }
